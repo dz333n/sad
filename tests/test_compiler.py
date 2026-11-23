@@ -85,6 +85,79 @@ class ArrayTests(TreeCase):
             self.compile()
 
 
+class GroupTests(TreeCase):
+    def setUp(self):
+        super().setUp()
+        self.put("p/index.json", {"$kind": "array", "$name_map": "id"})
+
+    def test_group_elements_join_the_parent_array(self):
+        self.put("p/screens/index.json", {"$kind": "group", "$group_map": "kind"})
+        self.put("p/screens/lcd_a.json", {"bpp": 2})
+        self.put("p/speakers/index.json", {"$kind": "group", "$group_map": "kind"})
+        self.put("p/speakers/hp.json", {})
+        self.assertEqual(self.compile()["p"], [{"id": "hp", "kind": "speakers"},
+                                               {"id": "lcd_a", "kind": "screens", "bpp": 2}])
+
+    def test_group_without_map_only_joins(self):
+        self.put("p/more/index.json", {"$kind": "group"})
+        self.put("p/more/b.json", {})
+        self.put("p/a.json", {})
+        self.assertEqual([e["id"] for e in self.compile()["p"]], ["a", "b"])
+
+    def test_groups_sort_with_their_siblings(self):
+        self.put("p/g/index.json", {"$kind": "group"})
+        self.put("p/g/c.json", {"$index": 0})
+        self.put("p/g/a.json", {})
+        self.put("p/b.json", {})
+        self.assertEqual([e["id"] for e in self.compile()["p"]], ["c", "a", "b"])
+
+    def test_nested_groups_join_the_outer_array(self):
+        self.put("p/g/index.json", {"$kind": "group", "$group_map": "outer"})
+        self.put("p/g/h/index.json", {"$kind": "group", "$group_map": "inner"})
+        self.put("p/g/h/a.json", {})
+        self.assertEqual(self.compile()["p"], [{"id": "a", "outer": "g", "inner": "h"}])
+
+    def test_group_outside_an_array_fails(self):
+        self.put("o/g/index.json", {"$kind": "group"})
+        with self.assertRaises(SadError):
+            self.compile()
+
+    def test_group_with_data_fails(self):
+        self.put("p/g/index.json", {"$kind": "group", "name": "x"})
+        with self.assertRaises(SadError):
+            self.compile()
+
+    def test_group_with_index_fails(self):
+        self.put("p/g/index.json", {"$kind": "group", "$index": 0})
+        with self.assertRaises(SadError):
+            self.compile()
+
+    def test_group_map_needs_a_group(self):
+        self.put("q/index.json", {"$kind": "array", "$group_map": "kind"})
+        with self.assertRaises(SadError):
+            self.compile()
+
+    def test_same_name_in_two_groups_fails(self):
+        self.put("p/g/index.json", {"$kind": "group"})
+        self.put("p/g/a.json", {})
+        self.put("p/h/index.json", {"$kind": "group"})
+        self.put("p/h/a.json", {})
+        with self.assertRaises(SadError):
+            self.compile()
+
+    def test_group_map_conflict_fails(self):
+        self.put("p/g/index.json", {"$kind": "group", "$group_map": "kind"})
+        self.put("p/g/a.json", {"kind": "x"})
+        with self.assertRaises(SadError):
+            self.compile()
+
+    def test_group_map_same_as_name_map_fails(self):
+        self.put("p/g/index.json", {"$kind": "group", "$group_map": "id"})
+        self.put("p/g/a.json", {})
+        with self.assertRaises(SadError):
+            self.compile()
+
+
 class FlagTests(TreeCase):
     def test_unknown_flag_fails(self):
         self.put("p/index.json", {"$kind": "array", "$sort": "id"})

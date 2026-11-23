@@ -9,11 +9,13 @@ from .transformers import TRANSFORMERS
 FLAG_PREFIX = "$"
 KIND = "$kind"
 NAME_MAP = "$name_map"
+GROUP_MAP = "$group_map"
 INDEX = "$index"
 KIND_OBJECT = "object"
 KIND_ARRAY = "array"
+KIND_GROUP = "group"
 INDEX_FILE_STEM = "index"
-DIRECTORY_FLAGS = {KIND, NAME_MAP, INDEX}
+DIRECTORY_FLAGS = {KIND, NAME_MAP, GROUP_MAP, INDEX}
 ELEMENT_FLAGS = {INDEX}
 
 
@@ -62,22 +64,30 @@ class Compiler:
         data, flags = _split_flags(value, ELEMENT_FLAGS, path)
         return data, _element_index(flags, in_array, path)
 
-    def _directory(self, path: Path, in_array: bool) -> Tuple[Any, Optional[int]]:
+    def _settings(self, path: Path) -> Tuple[Dict[str, Any], Dict[str, Any], Path]:
         index_path = path / self._index_name
         settings = self._transformer.load(index_path) if index_path.is_file() else {}
         if not isinstance(settings, dict):
             raise SadError(f"{index_path}: an index must hold an object")
         data, flags = _split_flags(settings, DIRECTORY_FLAGS, index_path)
+        return data, flags, index_path
+
+    def _directory(self, path: Path, in_array: bool) -> Tuple[Any, Optional[int]]:
+        data, flags, index_path = self._settings(path)
         index = _element_index(flags, in_array, index_path)
         kind = flags.get(KIND, KIND_OBJECT)
         name_map = flags.get(NAME_MAP)
+        if kind == KIND_GROUP:
+            raise SadError(f"{index_path}: a group is valid only inside an array")
+        if GROUP_MAP in flags:
+            raise SadError(f"{index_path}: {GROUP_MAP} needs {KIND} '{KIND_GROUP}'")
         children = self._children(path)
         if kind == KIND_ARRAY:
             if data:
                 raise SadError(f"{index_path}: the index of an array holds no data keys")
             return self._array(children, name_map, index_path), index
         if kind != KIND_OBJECT:
-            raise SadError(f"{index_path}: {KIND} must be '{KIND_OBJECT}' or '{KIND_ARRAY}'")
+            raise SadError(f"{index_path}: {KIND} must be '{KIND_OBJECT}', '{KIND_ARRAY}' or '{KIND_GROUP}'")
         if name_map is not None:
             raise SadError(f"{index_path}: {NAME_MAP} needs {KIND} '{KIND_ARRAY}'")
         return self._object(data, children), index
@@ -101,18 +111,53 @@ class Compiler:
     def _array(self, children: List[Tuple[str, Path]], name_map: Any, index_path: Path) -> List[Any]:
         if name_map is not None and (not isinstance(name_map, str) or not name_map):
             raise SadError(f"{index_path}: {NAME_MAP} must be a property name")
-        elements = []
-        for name, child in children:
-            value, index = self._node(child, in_array=True)
-            if name_map is not None:
-                if not isinstance(value, dict):
-                    raise SadError(f"{child}: {NAME_MAP} needs an object")
-                if name_map in value:
-                    raise SadError(f"{child}: '{name_map}' comes from the name, remove it")
-                value = {name_map: name, **value}
-            elements.append(((index is None, index or 0, name), value))
+        elements: List[Tuple[Tuple[bool, int, str], Any]] = []
+        self._elements(children, name_map, {}, {}, elements)
         elements.sort(key=lambda element: element[0])
         return [value for _key, value in elements]
+
+    def _elements(self, children: List[Tuple[str, Path]], name_map: Optional[str], group_values: Dict[str, str],
+                  seen: Dict[str, Path], out: List[Tuple[Tuple[bool, int, str], Any]]) -> None:
+        for name, child in children:
+            if child.is_dir():
+                data, flags, index_path = self._settings(child)
+                if flags.get(KIND) == KIND_GROUP:
+                    self._group(child, name, data, flags, index_path, name_map, group_values, seen, out)
+                    continue
+            if name in seen:
+                raise SadError(f"{child}: '{name}' is also {seen[name]}")
+            seen[name] = child
+            value, index = self._node(child, in_array=True)
+            if name_map is not None or group_values:
+                if not isinstance(value, dict):
+                    raise SadError(f"{child}: {NAME_MAP} and {GROUP_MAP} need an object")
+                mapped = dict(group_values)
+                if name_map is not None:
+                    mapped = {name_map: name, **mapped}
+                for key in mapped:
+                    if key in value:
+                        raise SadError(f"{child}: '{key}' comes from a name, remove it")
+                value = {**mapped, **value}
+            out.append(((index is None, index or 0, name), value))
+
+    def _group(self, path: Path, name: str, data: Dict[str, Any], flags: Dict[str, Any], index_path: Path,
+               name_map: Optional[str], group_values: Dict[str, str], seen: Dict[str, Path],
+               out: List[Tuple[Tuple[bool, int, str], Any]]) -> None:
+        if data:
+            raise SadError(f"{index_path}: the index of a group holds no data keys")
+        if INDEX in flags:
+            raise SadError(f"{index_path}: {INDEX} is valid only for an element of an array")
+        if NAME_MAP in flags:
+            raise SadError(f"{index_path}: {NAME_MAP} needs {KIND} '{KIND_ARRAY}'")
+        values = dict(group_values)
+        group_map = flags.get(GROUP_MAP)
+        if group_map is not None:
+            if not isinstance(group_map, str) or not group_map:
+                raise SadError(f"{index_path}: {GROUP_MAP} must be a property name")
+            if group_map in values or group_map == name_map:
+                raise SadError(f"{index_path}: '{group_map}' is already mapped")
+            values[group_map] = name
+        self._elements(self._children(path), name_map, values, seen, out)
 
     def _object(self, data: Dict[str, Any], children: List[Tuple[str, Path]]) -> Dict[str, Any]:
         out = dict(data)

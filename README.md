@@ -15,6 +15,8 @@ python -m sad <root> <transformer> <output>
 - `"$kind": "array"` turns directory into an array. Each file and each subdirectory is one element.
 - (for arrays) `"$name_map": "<property>"` - map the file name into a property of array member
 - (for array's element) `"$index": <integer>` - set position in array. Leave blank for alphabetial sort.
+- (for a directory inside an array) `"$kind": "group"` - the directory is not an element. Its files and subdirectories become elements of the array, sorted together with the other elements. No two elements of one array can have the same name.
+- (for a group) `"$group_map": "<property>"` - map the group name into a property of each element of the group.
 - All compiler flags are removed from the output. What starts with `.` is skipped.
 
 ## Example
